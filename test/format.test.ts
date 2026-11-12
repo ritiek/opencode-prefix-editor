@@ -1,140 +1,141 @@
 import { describe, expect, test } from "bun:test"
-import { current, edit, ids, parse, render, resolve, stale, type Request } from "../src/format.ts"
+import { current, parse, rebuild, render, resolveSystem, systemSpec, type Transfer } from "../src/format.ts"
 
-const request = (): Request =>
-  ({
-    system: [
-      { type: "text", text: "You are a helpful agent.", cache: { type: "ephemeral" } },
-      { type: "text", text: "Env: linux\n", metadata: { source: "env" } },
-    ],
-    messages: [
-      { id: "m0", role: "user", content: [{ type: "text", text: "fix the bug\n" }] },
-      {
-        id: "m1",
-        role: "assistant",
-        content: [
-          { type: "reasoning", text: "", encrypted: "sig" },
-          { type: "text", text: "Looking.", providerMetadata: { openai: { itemId: "x" } } },
-          { type: "tool-call", id: "c1", name: "read", input: { path: "a.ts" } },
-          { type: "tool-call", id: "c2", name: "bash", input: { command: "bun test" } },
-        ],
-      },
-      {
-        id: "m2",
-        role: "tool",
-        content: [
-          { type: "tool-result", id: "c1", name: "read", result: { type: "text", value: "const a = 1\n" } },
-          { type: "tool-result", id: "c2", name: "bash", result: { type: "json", value: { out: "=== 3 passed ===\n--- end ---" } } },
-        ],
-      },
-      {
-        id: "m3",
-        role: "user",
-        content: [
-          { type: "media", media: { source: { type: "bytes", data: new Uint8Array([1, 2]), mediaType: "image/png" } } },
-          // Header-looking lines inside a part must survive the round trip.
-          { type: "text", text: "what is this?\n=== user ===\n--- text ---\n\\=== tool #2 ===" },
-        ],
-      },
-    ],
-  }) as never
+type Stored = Transfer["messages"][number]
+const time = { created: 1 }
+const model = { providerID: "anthropic", id: "claude" }
 
-const base = (r: Request) => ids(r.messages)
+const messages = (): Stored[] =>
+  [
+    { type: "user", id: "msg_000000000001aaaaaaaaaaaaaa", time, text: "fix the bug\n", files: [{ uri: "file:///a.png" }] },
+    { type: "synthetic", id: "msg_000000000002aaaaaaaaaaaaaa", time, text: "<system-reminder>plan mode</system-reminder>" },
+    {
+      type: "assistant",
+      id: "msg_000000000003aaaaaaaaaaaaaa",
+      time,
+      agent: "build",
+      model,
+      native: { anthropic: { container: "c" } },
+      content: [
+        { type: "reasoning", text: "thinking", native: { signature: "sig" } },
+        { type: "text", text: "Looking." },
+        { type: "tool", id: "c1", name: "read", time, state: { status: "completed", input: { path: "a.ts" }, content: [{ type: "text", text: "const a = 1\n" }] } },
+        { type: "tool", id: "c2", name: "bash", time, state: { status: "completed", input: { command: "bun test" }, content: [{ type: "text", text: "a" }, { type: "file", uri: "file:///b", mime: "image/png" }] } },
+        { type: "tool", id: "c3", name: "bash", time, state: { status: "error", input: { command: "false" }, error: { message: "exit 1" } } },
+      ],
+    },
+    { type: "idle", id: "msg_000000000004aaaaaaaaaaaaaa", time, outcome: "succeeded" },
+    { type: "model-switched", id: "msg_000000000005aaaaaaaaaaaaaa", time, model },
+    // Header-looking lines inside a message must survive the round trip.
+    { type: "user", id: "msg_000000000006aaaaaaaaaaaaaa", time, text: "what is this?\n=== user ===\n--- text ---\n\\=== tool #2 ===" },
+    { type: "compaction", id: "msg_000000000007aaaaaaaaaaaaaa", time, status: "completed", reason: "auto", summary: "## Objective", native: { x: 1 } },
+  ] as never
+
+const system = [{ type: "text" as const, text: "You are an agent.", cache: { type: "ephemeral" as const } }, { type: "text" as const, text: "Env: linux\n" }]
+const text = (m = messages()) => render(current(m, systemSpec(system as never)))
+const withoutIds = (list: Stored[]) => list.map(({ id: _, ...rest }) => rest)
 
 describe("round trip", () => {
-  test("unchanged text resolves to the original request", () => {
-    const r = request()
-    const text = render(current(r))
-    expect(resolve(edit(text, r, base(r)), r)).toEqual(r)
-    // Untouched parts keep their identity, so nothing about them changes on the wire.
-    expect(resolve(edit(text, r, base(r)), r).messages[3]!.content[0]).toBe(r.messages[3]!.content[0]!)
+  test("unchanged text rebuilds the same messages under fresh ids", () => {
+    const m = messages()
+    const out = rebuild(parse(text(m)).messages, m)
+    expect(withoutIds(out)).toEqual(withoutIds(m))
+    out.forEach((msg, i) => {
+      expect(msg.id).not.toBe(m[i]!.id)
+      expect(msg.id.slice(0, 16)).toBe(m[i]!.id.slice(0, 16))
+    })
+    // Untouched parts are the very same objects, so nothing about them changes on the wire.
+    expect((out[2] as never as { content: unknown[] }).content[0]).toBe((m[2] as never as { content: unknown[] }).content[0])
   })
 
   test("renders readable sections", () => {
-    expect(render(current(request()))).toMatchSnapshot()
+    expect(text()).toMatchSnapshot()
   })
 
   test("trailing whitespace is not an edit", () => {
-    const r = request()
-    const text = render(current(r))
-    for (const variant of [text.replace(/\n+$/, ""), `${text}\n\n`, text.replaceAll("\n\n=", "\n=")]) {
-      const out = resolve(edit(variant, r, base(r)), r)
-      expect(out).toEqual(r)
-      expect(out.system[1]).toBe(r.system[1]!)
-      expect(out.messages[0]!.content[0]).toBe(r.messages[0]!.content[0]!)
-    }
+    const m = messages()
+    for (const variant of [text(m).replace(/\n+$/, ""), `${text(m)}\n\n`, text(m).replaceAll("\n\n=", "\n=")])
+      expect(withoutIds(rebuild(parse(variant).messages, m))).toEqual(withoutIds(m))
   })
 })
 
 describe("edits", () => {
-  const r = request()
-  const text = render(current(r))
-    .replace("You are a helpful agent.", "You are a pirate.")
-    .replace("Env: linux", "Env: mac")
+  const m = messages()
+  const edited = text(m)
+    .replace("fix the bug\n", "fix the bug in a.ts\n")
+    .replace("Looking.", "Reading a.ts.")
+    .replace("thinking", "thought")
+    .replace('"path": "a.ts"', '"path": "b.ts"')
     .replace("const a = 1\n", "[pruned]")
-    .replace('"command": "bun test"', '"command": "bun test --bail"')
-    .replace("=== user #0 ===\nfix the bug\n", "=== user #0 ===\nfix the bug in a.ts\n")
-    .replace(/=== user #3 ===[\s\S]*$/, "=== user ===\nnew message\n")
-  const spec = edit(text, r, base(r))
-  const out = resolve(spec, r)
+    .replace("=== idle #3 ===\n", "")
+    .replace("## Objective", "## Goal")
+  const out = rebuild(parse(edited).messages, m) as never as Record<string, any>[]
 
-  test("system prompt keeps its other fields", () => {
-    expect(out.system[0]).toEqual({ type: "text", text: "You are a pirate.", cache: { type: "ephemeral" } })
-    // Trailing whitespace of the original survives, since system parts are joined.
-    expect(out.system[1]).toEqual({ type: "text", text: "Env: mac\n", metadata: { source: "env" } })
+  test("text edits keep other fields and the original trailing whitespace", () => {
+    expect(out[0]).toMatchObject({ type: "user", text: "fix the bug in a.ts\n", files: [{ uri: "file:///a.png" }] })
   })
 
-  test("text, tool input and tool output are replaced", () => {
-    expect(out.messages[0]!.content[0]).toEqual({ type: "text", text: "fix the bug in a.ts\n" })
-    expect(out.messages[1]!.content[3]).toMatchObject({ input: { command: "bun test --bail" } })
-    expect(out.messages[2]!.content[0]).toMatchObject({ result: { type: "text", value: "[pruned]" } })
+  test("assistant edits drop provider replay data so the model sees them", () => {
+    const content = out[2]!.content
+    expect(out[2]!.native).toBeUndefined()
+    expect(content[0]).toEqual({ type: "reasoning", text: "thought", native: undefined })
+    expect(content[1]).toEqual({ type: "text", text: "Reading a.ts.", native: undefined })
+    expect(content[2].state).toEqual({ status: "completed", input: { path: "b.ts" }, content: [{ type: "text", text: "[pruned]" }] })
   })
 
-  test("messages can be removed and added", () => {
-    expect(out.messages).toHaveLength(4)
-    expect(out.messages[3]).toEqual({ role: "user", content: [{ type: "text", text: "new message" }] } as never)
+  test("deleting a header drops the message", () => {
+    expect(out.map((msg) => msg.type)).toEqual(["user", "synthetic", "assistant", "model-switched", "user", "compaction"])
   })
 
-  test("clearing a message deletes it", () => {
-    const cleared = render(current(r)).replace("fix the bug\n", "")
-    expect(resolve(edit(cleared, r, base(r)), r).messages.map((m) => m.id)).toEqual(["m1", "m2", "m3"])
+  test("compaction summaries are editable", () => {
+    expect(out[5]).toMatchObject({ summary: "## Goal", native: undefined })
   })
 
-  test("is sticky: later messages are appended after the edited prefix", () => {
-    const grown = { ...r, messages: [...r.messages, { id: "m4", role: "assistant", content: [{ type: "text", text: "Arr." }] }] } as Request
-    expect(stale(spec, grown)).toBe(false)
-    expect(resolve(spec, grown).messages.map((m) => m.id ?? "new")).toEqual(["m0", "m1", "m2", "new", "m4"])
+  test("a tool part stays until both of its sections are deleted", () => {
+    const outputGone = text(m).replace(/--- tool-output #2\.2 read ---\nconst a = 1\n\n/, "")
+    expect((rebuild(parse(outputGone).messages, m)[2] as never as { content: unknown[] }).content).toHaveLength(5)
+    const bothGone = outputGone.replace(/--- tool-input #2\.2 read ---\n[\s\S]*?\n\n(?=---)/, "")
+    expect((rebuild(parse(bothGone).messages, m)[2] as never as { content: unknown[] }).content).toHaveLength(4)
   })
 
-  test("re-editing starts from the edited prefix", () => {
-    const grown = { ...r, messages: [...r.messages, { id: "m4", role: "assistant", content: [{ type: "text", text: "Arr." }] }] } as Request
-    const again = render(current(grown, spec))
-    expect(again).toContain("You are a pirate.")
-    expect(again).toContain("=== assistant #4 ===\nArr.")
-    expect(resolve(edit(again, grown, base(grown)), grown)).toEqual(resolve(spec, grown))
+  test("new user messages and text parts can be added; cleared messages are deleted", () => {
+    const more = text(m)
+      .replace("fix the bug\n", "")
+      .replace("=== idle #3 ===", "--- text ---\nadded part\n\n=== user ===\nnew message\n\n=== idle #3 ===")
+    const res = rebuild(parse(more).messages, m) as never as Record<string, any>[]
+    expect(res.map((msg) => msg.type)).toEqual(["synthetic", "assistant", "user", "idle", "model-switched", "user", "compaction"])
+    expect(res[1]!.content.at(-1)).toEqual({ type: "text", text: "added part" })
+    expect(res[2]).toMatchObject({ type: "user", text: "new message" })
+    expect(res[2]!.id).toMatch(/^msg_\w{26}$/)
   })
 })
 
 describe("errors", () => {
-  const r = request()
-  const text = render(current(r))
+  const m = messages()
+  const t = text(m)
+  const fails = (edited: string, message: string) => expect(() => rebuild(parse(edited).messages, m)).toThrow(message)
 
-  test("invalid JSON names the part", () => {
-    expect(() => edit(text.replace('"path": "a.ts"', "path: a.ts"), r, base(r))).toThrow("Invalid JSON in tool-call #1.2")
+  test("invalid JSON names the section", () => fails(t.replace('"path": "a.ts"', "path: a.ts"), "Invalid JSON in tool-input #2.2"))
+  test("unknown refs are rejected", () => fails(t.replace("--- tool-input #2.2 read ---", "--- tool-input #9.9 ---"), "Unknown part"))
+  test("a ref must match its message type", () => fails(t.replace("=== synthetic #1 ===", "=== user #1 ==="), "Unknown message: user #1"))
+  test("only user messages can be new", () => fails(`${t}=== assistant ===\nhi\n`, 'Only new user messages can be added, not "assistant"'))
+  test("markers have no text", () => fails(t.replace("=== idle #3 ===", "=== idle #3 ===\nhello"), "idle #3 has no editable text"))
+  test("parts only belong to assistant messages", () => expect(() => parse(t.replace("=== synthetic #1 ===", "=== synthetic #1 ===\n--- text ---"))).toThrow("must follow an assistant"))
+  test("text before the first header is rejected", () => expect(() => parse(`oops\n${t}`)).toThrow("Line 1"))
+})
+
+describe("system prompt", () => {
+  test("unchanged sections resolve to the generated parts", () => {
+    const resolved = resolveSystem(parse(text()).system, system as never)
+    resolved.forEach((part, i) => expect(part).toBe(system[i]!))
   })
 
-  test("unknown refs are rejected", () => {
-    expect(() => edit(text.replace("--- tool-call #1.2 ---", "--- tool-call #9.9 ---"), r, base(r))).toThrow("Unknown part")
-  })
-
-  test("text before the first header is rejected", () => {
-    expect(() => parse(`oops\n${text}`)).toThrow("Line 1")
-  })
-
-  test("a history that changed meanwhile is rejected and marks edits stale", () => {
-    const compacted = { ...r, messages: [{ id: "summary", role: "user", content: [{ type: "text", text: "..." }] }, ...r.messages.slice(1)] } as Request
-    expect(() => edit(text, compacted, base(r))).toThrow("history changed")
-    expect(stale(edit(text, r, base(r)), compacted)).toBe(true)
-    expect(stale(edit(text, r, base(r)), { ...r, messages: r.messages.slice(0, 2) })).toBe(true)
+  test("edits keep other fields and trailing whitespace; new sections are plain text", () => {
+    const spec = parse(text().replace("You are an agent.", "You are a pirate.").replace("Env: linux", "Env: mac") + "=== system-prompt ===\nBe brief.\n").system
+    expect(resolveSystem(spec, system as never)).toEqual([
+      { type: "text", text: "You are a pirate.", cache: { type: "ephemeral" } },
+      { type: "text", text: "Env: mac\n" },
+      { type: "text", text: "Be brief." },
+    ])
   })
 })

@@ -3,8 +3,11 @@
 An [OpenCode](https://opencode.ai) V2 plugin to edit what the model sees, the system prompt and the conversation
 history, in your `$EDITOR`.
 
-Run `/edit-prefix` in a session. The current system prompt and history open as plain text; save and quit, and every
-following request in that session sends your version instead. New turns are appended after it.
+Run `/edit-prefix` in a session. Its system prompt and history open as plain text. Save and quit:
+
+- History edits are saved as a new session, `<title> (edited)`, and the TUI switches to it. Its transcript shows
+  exactly the history the model gets. The original session is left untouched.
+- System prompt edits apply to every later request in the session (and carry over to sessions forked from it).
 
 ## Install
 
@@ -25,7 +28,7 @@ Or list it under `plugins` in `opencode.json(c)`, as a package name or a local p
 | Command | |
 | --- | --- |
 | `/edit-prefix` | Open the session's system prompt and history in `$VISUAL` / `$EDITOR` (default `vi`). |
-| `/reset-prefix` | Drop the edit and send the original system prompt and history again. |
+| `/reset-prefix` | Drop this session's system prompt edit. |
 
 Both are also in the command palette (`ctrl+p`). Saving without changes, or quitting with a non-zero exit (`:cq`),
 changes nothing. If the edited text does not parse, you can reopen it with your changes intact.
@@ -33,7 +36,7 @@ changes nothing. If the edited text does not parse, you can reopen it with your 
 ## Format
 
 ```text
-=== system prompt #0 ===
+=== system-prompt #0 ===
 You are an AI agent running in OpenCode...
 
 === user #0 ===
@@ -42,47 +45,46 @@ Fix the failing test.
 === assistant #1 ===
 Running the tests.
 
---- tool-call #1.1 ---
+--- tool-input #1.1 shell ---
 {
   "command": "bun test"
 }
 
-=== tool #2 ===
---- tool-result #2.0 ---
+--- tool-output #1.1 shell ---
 1 fail ...
 
+=== idle #2 ===
 === user ===
 A message you added.
 ```
 
-- `=== <role> #N ===` starts a message (`system prompt`, `system`, `user`, `assistant` or `tool`). Text right below it
-  is the message's first text part.
-- `--- <type> #N.M ---` starts one part of a message. Text and reasoning are plain text; tool calls and tool results
-  are JSON (text tool results are plain text). Other parts, such as images, show only their header: keep it or delete
-  it.
-- `#N` refers to the original message or part. Fields the text does not show (ids, cache hints, provider metadata)
-  are carried over from it, and parts you did not change are sent exactly as before.
-- Delete a section, or clear its text, to remove it. Add `=== user ===` or `--- text ---` without a number to insert
-  new text.
-- A line inside a part that would read as a header is shown with an extra leading `\`, which is removed again on
+- `=== <type> #N ===` starts a message: `user`, `synthetic` (reminders), `system`, `skill` and `compaction` hold
+  editable text; `assistant` holds parts; markers such as `idle`, `shell` or `model-switched` can only be kept or
+  deleted.
+- `--- <kind> #N.M ---` starts a part of an assistant message: `text` and `reasoning` are plain text, `tool-input` is
+  JSON, `tool-output` is plain text (JSON when the tool returned more than one item). Text right below an assistant
+  header is its first text part. A trailing word in a header (tool name, model, ...) is only a label.
+- `#N` refers to the original message or part, which supplies every field the text does not show.
+- Delete a section, or clear its text, to remove it. A tool call goes once both its sections are gone. Add
+  `=== user ===` or `--- text ---` without a number to insert new text.
+- A line inside a message that would read as a header is shown with an extra leading `\`, which is removed again on
   save.
 
 ## Behavior
 
-- Only what is sent to the model changes. The stored session, the transcript in the UI, and the history other clients
-  see stay as they were.
-- The edit sticks to the session: it replaces the history you saw, and later messages follow it.
-- When the history is rewritten under it (compaction, revert), the edit no longer matches and is dropped
-  automatically.
+- Parts you did not change are copied verbatim. Changed assistant parts lose their provider replay data (`native`,
+  such as reasoning signatures), so the model sees the edit; some providers then drop edited reasoning.
+- The system prompt is not stored in the session, so its edit is applied when each request is built. Compaction
+  summaries are made without it.
 - Editing a cached prefix invalidates the provider's prompt cache from the first changed byte.
-- Compaction summaries are made from the original history.
+- Sessions are copied through OpenCode's experimental export/import API.
 
 ## How it works
 
-The server part registers a `context` hook that swaps in the edited prefix before each agent-loop request, and stores
-edits in plugin storage keyed by session. To show the current context, including the reply that just finished, it
-issues a transient `session.generate` request and aborts it from its `generate` hook before anything reaches the model.
-The TUI part suspends the terminal UI, runs the editor, and talks to the server part over a plugin RPC.
+The TUI part exports the session, renders it, runs the editor (suspending the terminal UI), and imports the edited
+messages as a new session with fresh ids. The server part stores system prompt edits per session and swaps them in from
+a `context` hook. To show the current system prompt it issues a transient `session.generate` request and aborts it from
+its `generate` hook before anything reaches the model. The two parts talk over a plugin RPC.
 
 ## Development
 

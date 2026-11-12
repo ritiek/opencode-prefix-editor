@@ -1,67 +1,65 @@
 import { Plugin } from "@opencode/plugin"
-import { current, edit, ids, render, resolve, stale, type Request, type Spec } from "./format.ts"
-import { PrefixEditor, type Ids } from "./rpc.ts"
+import type { SessionContext } from "@opencode/plugin/promise/session"
+import { resolveSystem, systemSpec, type SystemSpec } from "./format.ts"
+import { PrefixEditor } from "./rpc.ts"
 
+// Messages are edited by forking the session (TUI part). The system prompt is generated per request,
+// so edits to it are stored here and swapped in before each model call.
 export default Plugin.define({
   id: "prefix-editor",
   async setup(ctx) {
-    const key = (sessionID: string) => `edit/${sessionID}`
-    const load = async (sessionID: string) => (await ctx.storage.get(key(sessionID))) as Spec | undefined
-    const drop = (sessionID: string) => ctx.storage.remove(key(sessionID))
+    const key = (sessionID: string) => `system/${sessionID}`
+    const load = async (sessionID: string) => (await ctx.storage.get(key(sessionID))) as SystemSpec | undefined
 
     await ctx.session.hook("context", async (event) => {
       const spec = await load(event.sessionID)
-      if (!spec) return
-      if (stale(spec, event)) return drop(event.sessionID)
-      try {
-        Object.assign(event, resolve(spec, event))
-      } catch {
-        await drop(event.sessionID) // never let a broken edit wedge the session
-      }
+      if (spec) event.system = resolveSystem(spec, event.system)
     })
 
-    // The context hook only runs on model calls, so snapshot the session on demand through a transient
+    // The context hook only runs on model calls, so read the generated system prompt through a transient
     // generate request, aborted in its hook before anything reaches the model.
-    const pending = new Map<string, (request: Request) => void>()
+    const pending = new Map<string, (system: SessionContext["system"]) => void>()
     await ctx.session.hook("generate", (event) => {
       const last = event.messages.at(-1)?.content[0]
       const take = last?.type === "text" ? pending.get(last.text) : undefined
       if (!take) return
-      take({ system: event.system, messages: event.messages.slice(0, -1) })
+      take(event.system)
       throw new Error("prefix-editor: snapshot taken")
     })
     const snapshot = async (sessionID: string) => {
       const token = `prefix-editor:${crypto.randomUUID()}`
-      let request: Request | undefined
-      pending.set(token, (r) => (request = r))
+      let system: SessionContext["system"] | undefined
+      pending.set(token, (s) => (system = s))
       await ctx.session.generate({ sessionID, prompt: token }).catch(() => {})
       pending.delete(token)
-      if (!request) throw new Error("Could not read the session context")
-      return request
+      if (!system) throw new Error("Could not read the session's system prompt")
+      return system
     }
 
     await ctx.rpc.register(PrefixEditor, {
-      render: async (input, { error }) => {
+      getSystem: async (input, { error }) => {
         const { sessionID } = input as { sessionID: string }
         try {
-          const orig = await snapshot(sessionID)
-          const spec = await load(sessionID)
-          return { text: render(current(orig, spec && !stale(spec, orig) ? spec : undefined)), ids: ids(orig.messages) }
+          return { system: (await load(sessionID)) ?? systemSpec(await snapshot(sessionID)) }
         } catch (e) {
           return error("failed", (e as Error).message, {})
         }
       },
-      apply: async (input, { error }) => {
-        const { sessionID, text, ids: base } = input as { sessionID: string; text: string; ids: Ids }
+      setSystem: async (input, { error }) => {
+        const { sessionID, system } = input as { sessionID: string; system: SystemSpec }
         try {
-          await ctx.storage.set(key(sessionID), edit(text, await snapshot(sessionID), base))
+          const orig = await snapshot(sessionID)
+          const resolved = resolveSystem(system, orig)
+          // An edit that resolves back to the generated prompt is no edit at all.
+          if (resolved.length === orig.length && resolved.every((part, i) => part === orig[i])) await ctx.storage.remove(key(sessionID))
+          else await ctx.storage.set(key(sessionID), system)
           return {}
         } catch (e) {
           return error("failed", (e as Error).message, {})
         }
       },
       reset: async (input) => {
-        await drop((input as { sessionID: string }).sessionID)
+        await ctx.storage.remove(key((input as { sessionID: string }).sessionID))
         return {}
       },
     })
