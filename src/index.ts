@@ -3,8 +3,8 @@ import type { SessionContext } from "@opencode/plugin/promise/session"
 import { resolveSystem, systemSpec, type SystemSpec } from "./format.ts"
 import { PrefixEditor } from "./rpc.ts"
 
-// Messages are edited by forking the session (TUI part). The system prompt is generated per request,
-// so edits to it are stored here and swapped in before each model call.
+// Edits are saved as a new session (TUI part). The system prompt is generated per request, so the
+// new session's edited prompt is stored here and swapped in before each model call.
 export default Plugin.define({
   id: "prefix-editor",
   async setup(ctx) {
@@ -57,10 +57,6 @@ export default Plugin.define({
         } catch (e) {
           return error("failed", (e as Error).message, {})
         }
-      },
-      reset: async (input) => {
-        await ctx.storage.remove(key((input as { sessionID: string }).sessionID))
-        return {}
       },
     })
   },

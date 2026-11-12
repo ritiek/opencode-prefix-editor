@@ -16,7 +16,6 @@ export const PrefixEditor = Rpc.define({
   methods: {
     getSystem: { input: object({ sessionID }), output: object({ system }), errors },
     setSystem: { input: object({ sessionID, system }), output: object({}), errors },
-    reset: { input: object({ sessionID }), output: object({}) },
   },
   events: {},
 })

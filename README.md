@@ -3,11 +3,10 @@
 An [OpenCode](https://opencode.ai) V2 plugin to edit what the model sees, the system prompt and the conversation
 history, in your `$EDITOR`.
 
-Run `/edit-prefix` in a session. Its system prompt and history open as plain text. Save and quit:
-
-- History edits are saved as a new session, `<title> (edited)`, and the TUI switches to it. Its transcript shows
-  exactly the history the model gets. The original session is left untouched.
-- System prompt edits apply to every later request in the session (and carry over to sessions forked from it).
+Run `/edit-prefix` in a session. Its system prompt and history open as plain text. Save and quit, and the edit is
+saved as a new session, `<title> (edited)`, which the TUI switches to. Its transcript shows exactly the history the
+model gets, and its edited system prompt applies to every request it makes. The original session is left untouched,
+so switching back to it is the undo.
 
 ## Install
 
@@ -36,12 +35,8 @@ Without Nix, clone the repository and list its path under `plugins` in `opencode
 
 ## Usage
 
-| Command | |
-| --- | --- |
-| `/edit-prefix` | Open the session's system prompt and history in `$VISUAL` / `$EDITOR` (default `vi`). |
-| `/reset-prefix` | Drop this session's system prompt edit. |
-
-Both are also in the command palette (`ctrl+p`). Saving without changes, or quitting with a non-zero exit (`:cq`),
+`/edit-prefix` (also in the command palette, `ctrl+p`) opens the session's system prompt and history in `$VISUAL` /
+`$EDITOR` (default `vi`). Saving without changes, or quitting with a non-zero exit (`:cq`),
 changes nothing. If the edited text does not parse, you can reopen it with your changes intact.
 
 ## Format

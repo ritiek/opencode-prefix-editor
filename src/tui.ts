@@ -67,13 +67,10 @@ export default Plugin.define({
         text = await openEditor(text)
         try {
           const after = parse(text)
-          const messages = JSON.stringify(after.messages) !== JSON.stringify(before.messages)
-          const prompt = JSON.stringify(after.system) !== JSON.stringify(before.system)
-          if (!text.trim() || (!messages && !prompt)) return toast("Prefix unchanged")
-          // rebuild() validates everything before anything is written.
-          const edited = messages ? await fork(transfer, rebuild(after.messages, transfer.messages), s.location) : undefined
-          await s.rpc.setSystem({ sessionID: edited?.id ?? s.sessionID, system: after.system }, s.options)
-          if (!edited) return toast("System prompt updated", "success")
+          if (!text.trim() || JSON.stringify(after) === JSON.stringify(before)) return toast("Prefix unchanged")
+          // Every edit lands in a copy, so the original session is the undo. rebuild() validates before anything is written.
+          const edited = await fork(transfer, rebuild(after.messages, transfer.messages), s.location)
+          await s.rpc.setSystem({ sessionID: edited.id, system: after.system }, s.options)
           // Import emits no message events, so load the new session into the TUI's cache before showing it.
           await ctx.data.session.sync(edited.id)
           await ctx.data.session.message.sync(edited.id)
@@ -91,13 +88,6 @@ export default Plugin.define({
       }
     }
 
-    const resetPrefix = async () => {
-      const s = session()
-      if (!s) return toast("Open a session first", "error")
-      await s.rpc.reset({ sessionID: s.sessionID }, s.options)
-      toast("System prompt reset to the generated one", "success")
-    }
-
     const run = (action: () => Promise<unknown>) => () => {
       action().catch((e) => toast((e as Error).message, "error"))
     }
@@ -108,20 +98,11 @@ export default Plugin.define({
         {
           id: "prefix-editor.edit",
           title: "Edit prefix in $EDITOR",
-          description: "Edit the system prompt and conversation history; history edits save as a new session",
+          description: "Edit the system prompt and conversation history; saves as a new session",
           group: "Session",
           palette: true,
           slash: { name: "edit-prefix" },
           run: run(editPrefix),
-        },
-        {
-          id: "prefix-editor.reset",
-          title: "Reset system prompt",
-          description: "Drop this session's system prompt edit",
-          group: "Session",
-          palette: true,
-          slash: { name: "reset-prefix" },
-          run: run(resetPrefix),
         },
       ],
     }))
