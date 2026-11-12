@@ -32,7 +32,8 @@ const request = (): Request =>
         role: "user",
         content: [
           { type: "media", media: { source: { type: "bytes", data: new Uint8Array([1, 2]), mediaType: "image/png" } } },
-          { type: "text", text: "what is this?" },
+          // Header-looking lines inside a part must survive the round trip.
+          { type: "text", text: "what is this?\n=== user ===\n--- text ---\n\\=== tool #2 ===" },
         ],
       },
     ],

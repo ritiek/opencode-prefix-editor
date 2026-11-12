@@ -64,6 +64,8 @@ A message you added.
   are carried over from it, and parts you did not change are sent exactly as before.
 - Delete a section, or clear its text, to remove it. Add `=== user ===` or `--- text ---` without a number to insert
   new text.
+- A line inside a part that would read as a header is shown with an extra leading `\`, which is removed again on
+  save.
 
 ## Behavior
 
@@ -74,7 +76,6 @@ A message you added.
   automatically.
 - Editing a cached prefix invalidates the provider's prompt cache from the first changed byte.
 - Compaction summaries are made from the original history.
-- Lines that look exactly like a header (`=== user ===`, `--- text ---`) inside a message are read as headers.
 
 ## How it works
 

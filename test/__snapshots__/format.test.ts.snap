@@ -41,6 +41,9 @@ const a = 1
 --- media #3.0 ---
 --- text #3.1 ---
 what is this?
+\\=== user ===
+\\--- text ---
+\\\\=== tool #2 ===
 
 "
 `;

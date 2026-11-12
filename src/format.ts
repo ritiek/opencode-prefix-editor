@@ -86,7 +86,12 @@ export function current(orig: Request, spec?: Spec): Prefix {
 const tag = (ref?: number | number[]) => (ref === undefined ? "" : ` #${[ref].flat().join(".")}`)
 // Text written directly under a message header maps back to that message's first part.
 const head = (ref?: number): [number, number] | undefined => (ref === undefined ? undefined : [ref, 0])
-const chunk = (header: string, body: string) => (body ? `${header}\n${body}\n\n` : `${header}\n`)
+const isHeader = (line: string) => MESSAGE.test(line) || PART.test(line)
+// Body lines that would read as headers get one more leading backslash, which parse() removes again.
+const escaped = (line: string) => isHeader(line.replace(/^\\+/, ""))
+const escape = (body: string) => body.replace(/^.*$/gm, (line) => (escaped(line) ? `\\${line}` : line))
+const unescape = (line: string) => (line.startsWith("\\") && escaped(line) ? line.slice(1) : line)
+const chunk = (header: string, body: string) => (body ? `${header}\n${escape(body)}\n\n` : `${header}\n`)
 
 export function render({ system, messages }: Prefix): string {
   return [
@@ -105,8 +110,8 @@ export function render({ system, messages }: Prefix): string {
 export function parse(text: string): Prefix {
   const chunks: { header: string; line: number; lines: string[] }[] = []
   text.split("\n").forEach((line, i) => {
-    if (MESSAGE.test(line) || PART.test(line)) chunks.push({ header: line, line: i + 1, lines: [] })
-    else if (chunks.length) chunks.at(-1)!.lines.push(line)
+    if (isHeader(line)) chunks.push({ header: line, line: i + 1, lines: [] })
+    else if (chunks.length) chunks.at(-1)!.lines.push(unescape(line))
     else if (line.trim()) throw new Error(`Line ${i + 1}: expected a "=== <role> ===" header`)
   })
 
