@@ -11,15 +11,26 @@ Run `/edit-prefix` in a session. Its system prompt and history open as plain tex
 
 ## Install
 
-```sh
-opencode plugin add opencode-prefix-editor
+The plugin is a directory of TypeScript sources that OpenCode loads as-is. With Nix, take it from this flake:
+
+```nix
+# flake.nix
+inputs.opencode-prefix-editor = {
+  url = "github:ritiek/opencode-prefix-editor";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# home-manager
+programs.opencode.settings.plugins = [
+  "${inputs.opencode-prefix-editor.packages.${pkgs.stdenv.hostPlatform.system}.default}"
+];
 ```
 
-Or list it under `plugins` in `opencode.json(c)`, as a package name or a local path:
+Without Nix, clone the repository and list its path under `plugins` in `opencode.json(c)`:
 
 ```jsonc
 {
-  "plugins": ["opencode-prefix-editor"],
+  "plugins": ["/path/to/opencode-prefix-editor"],
 }
 ```
 
@@ -92,6 +103,7 @@ its `generate` hook before anything reaches the model. The two parts talk over a
 bun install
 bun test
 bun run typecheck
+nix flake check
 ```
 
 ## License
