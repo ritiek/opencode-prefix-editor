@@ -1,0 +1,31 @@
+{
+  "name": "opencode-prefix-editor",
+  "version": "0.1.0",
+  "description": "OpenCode V2 plugin: edit the system prompt and conversation history the model sees in $EDITOR",
+  "keywords": ["opencode", "opencode-plugin", "system-prompt", "context"],
+  "license": "MIT",
+  "author": "Ritiek Malhotra",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ritiek/opencode-prefix-editor.git"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.ts",
+    "./rpc": "./src/rpc.ts"
+  },
+  "files": ["src"],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.2.5"
+  },
+  "devDependencies": {
+    "@opentui/core": "^0.8.4",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

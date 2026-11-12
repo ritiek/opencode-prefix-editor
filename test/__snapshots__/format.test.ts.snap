@@ -1,0 +1,46 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`round trip renders readable sections 1`] = `
+"=== system prompt #0 ===
+You are a helpful agent.
+
+=== system prompt #1 ===
+Env: linux
+
+
+=== user #0 ===
+fix the bug
+
+
+=== assistant #1 ===
+--- reasoning #1.0 ---
+--- text #1.1 ---
+Looking.
+
+--- tool-call #1.2 ---
+{
+  "path": "a.ts"
+}
+
+--- tool-call #1.3 ---
+{
+  "command": "bun test"
+}
+
+=== tool #2 ===
+--- tool-result #2.0 ---
+const a = 1
+
+
+--- tool-result #2.1 ---
+{
+  "out": "=== 3 passed ===\\n--- end ---"
+}
+
+=== user #3 ===
+--- media #3.0 ---
+--- text #3.1 ---
+what is this?
+
+"
+`;
