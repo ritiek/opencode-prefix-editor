@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { applyEdits, current, diffSystem, extractEdits, hiddenEdits, outline, parse, reach, rebuild, render, resolveSystem, sections, withoutRequests, REQUEST, type Edit, type StoredSystem, type Transfer } from "../src/format.ts"
+import { applyEdits, current, diffSystem, extractEdits, hiddenEdits, outline, parse, reach, rebuild, render, resolveSystem, sections, withoutRequests, REQUEST, NOTE, type Edit, type StoredSystem, type Transfer } from "../src/format.ts"
 
 type Stored = Transfer["messages"][number]
 const time = { created: 1 }
@@ -329,5 +329,11 @@ describe("request turns", () => {
     const user = (id: string) => ({ ...m[0]!, id }) as Stored
     const list = [m[0]!, request("r1", REQUEST), reply("a1"), m[3]!, user("u2"), request("r2", REQUEST), reply("a2"), request("u3", { other: 1 })]
     expect(withoutRequests(list).map((x) => x.id)).toEqual([m[0]!.id, "u2", "u3"])
+  })
+
+  test("notices left in the original are dropped from copies", () => {
+    const m = messages()
+    const note = { type: "synthetic", id: "n1", time, text: "[prefix-editor] saved", description: "saved", metadata: NOTE } as never as Stored
+    expect(withoutRequests([m[0]!, note, m[1]!]).map((x) => x.id)).toEqual([m[0]!.id, m[1]!.id])
   })
 })

@@ -104,7 +104,7 @@ export default Plugin.define({
     }
 
     /** Opens `text` in the editor until it is saved as a new session or given up on. */
-    const review = async ({ s, transfer, prefix, shown, hidden }: Snapshot, text: string) => {
+    const review = async ({ s, transfer, prefix, shown, hidden }: Snapshot, text: string, instruction?: string) => {
       const before = parse(render(prefix))
       for (;;) {
         text = await openEditor(text)
@@ -120,7 +120,13 @@ export default Plugin.define({
           await ctx.data.session.sync(edited.id)
           await ctx.data.session.message.sync(edited.id)
           ctx.ui.router.navigate({ type: "session", sessionID: edited.id })
-          return toast(`Saved as "${edited.title}"`, "success")
+          toast(`Saved as "${edited.title}"`, "success")
+          // A line in the original saying where the edit went; the model never sees it.
+          const command = instruction ? `/edit-prefix ${instruction}` : "/edit-prefix"
+          await rpc
+            .note({ sessionID: s.sessionID, description: `${command} → saved as "${edited.title}"` }, s.options)
+            .catch((e: Error) => toast(`Saved, but could not note it in the original session: ${e.message}`, "error"))
+          return
         } catch (e) {
           // Keep the user's edits: offer to reopen them instead of discarding.
           const retry = await ctx.ui.dialog.confirm({
@@ -161,8 +167,9 @@ export default Plugin.define({
       // A running turn is only partly in the model's context, so its refs would not line up.
       if (ctx.data.session.status(s.sessionID) === "running") return toast("Wait for the session to finish first", "error")
       const snap = await snapshot(s)
-      const text = instruction?.trim() ? await ask(snap, instruction.trim()) : render(snap.prefix)
-      await review(snap, text)
+      const asked = instruction?.trim()
+      const text = asked ? await ask(snap, asked) : render(snap.prefix)
+      await review(snap, text, asked)
     }
 
     ctx.keymap.layer(() => ({

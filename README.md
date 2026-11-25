@@ -5,11 +5,18 @@ history, in your `$EDITOR`.
 
 Run `/edit-prefix` in a session. Its system prompt and history open as plain text. Save and quit, and the edit is
 saved as a new session, `<title> (edited)`, which the TUI switches to. Its transcript shows exactly the history the
-model gets, and its edited system prompt applies to every request it makes. The original session is left untouched,
-so switching back to it is the undo.
+model gets, and its edited system prompt applies to every request it makes. What the original session sends the model
+is left untouched, so switching back to it is the undo. The original only gains a line at the bottom of its transcript
+saying where the edit went:
+
+```text
+◈ /edit-prefix drop the dead-end debugging → saved as "Fix the login bug (edited)"
+```
+
+The plugin keeps that line out of every model request, compaction and later copy.
 
 Or let the model do the editing: `/edit-prefix drop the dead-end debugging` asks it for the edits, which then open in
-your editor for review before they are saved the same way. Nothing is added to the original session either way.
+your editor for review before they are saved the same way.
 
 ## Install
 
@@ -116,6 +123,9 @@ A message you added.
   message that survived your edit.
 - Editing a cached prefix invalidates the provider's prompt cache from the first changed byte.
 - Sessions are copied through OpenCode's experimental export/import API.
+- The line left in the original is a synthetic message posted without waking the model. Until the session's next
+  turn it waits in the session's inbox; it is then stored, and the plugin filters it out of what the model gets by id.
+  Without the plugin loaded, that later turn would send the line's text to the model.
 - While you edit, the session is in a temporary file only you can read, removed when the editor closes.
 
 ## How it works
@@ -125,7 +135,8 @@ messages as a new session with fresh ids. For `/edit-prefix <instruction>` it fi
 `session.generate` request, which reads the session's context without adding to it. The server part stores each copy's
 system prompt edits and applies them to their sources from its `context` and `generate` hooks. To show the current
 system prompt it issues a transient `session.generate` request and aborts it from an earlier `generate` hook before
-anything reaches the model. The two parts talk over a plugin RPC.
+anything reaches the model. After a save it posts the line in the original and records its id, which its hooks drop from every request. The two
+parts talk over a plugin RPC.
 
 ## Development
 

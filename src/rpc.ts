@@ -25,6 +25,8 @@ export const PrefixEditor = Rpc.define({
       errors,
     },
     setSystem: { input: object({ sessionID, edits }), output: object({}) },
+    // Leaves a one-line notice in the transcript that the model never sees.
+    note: { input: object({ sessionID, description: { type: "string" } }), output: object({}) },
   },
   events: {},
 })

@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import type { SessionContext } from "@opencode/plugin/promise/session"
-import { hiddenEdits, isEmpty, resolveSystem, sections, type StoredSystem, type SystemEdits } from "./format.ts"
+import { hiddenEdits, isEmpty, NOTE, resolveSystem, sections, type StoredSystem, type SystemEdits } from "./format.ts"
 import { PrefixEditor } from "./rpc.ts"
 
 // Edits are saved as a new session (TUI part). The system prompt is generated per request, so the
@@ -32,11 +32,17 @@ export default Plugin.define({
       return taken
     }
 
+    // Notices left in sessions a copy was made from: shown in the transcript, never sent to the model.
+    const notesKey = (sessionID: string) => `notes/${sessionID}`
+    const notes = async (sessionID: string) => ((await ctx.storage.get(notesKey(sessionID))) as string[] | undefined) ?? []
+
     // Agent loop requests, and /edit-prefix <instruction>'s generate request, see the edited prompt.
-    for (const kind of ["context", "generate"] as const)
+    for (const kind of ["context", "generate", "compaction"] as const)
       await ctx.session.hook(kind, async (event) => {
-        const stored = await load(event.sessionID)
+        const stored = kind === "compaction" ? undefined : await load(event.sessionID)
         if (stored) event.system = resolveSystem(stored, event.system, event.agent)
+        const hidden = await notes(event.sessionID)
+        if (hidden.length) event.messages = event.messages.filter((m) => !m.id || !hidden.includes(m.id))
       })
 
     await ctx.rpc.register(PrefixEditor, {
@@ -55,6 +61,16 @@ export default Plugin.define({
         const { sessionID, edits } = input as { sessionID: string; edits: SystemEdits }
         if (isEmpty(edits)) await ctx.storage.remove(key(sessionID))
         else await ctx.storage.set(key(sessionID), edits)
+        return {}
+      },
+      note: async (input) => {
+        const { sessionID, description } = input as { sessionID: string; description: string }
+        const id = `msg_${crypto.randomUUID().replaceAll("-", "").slice(0, 26)}`
+        // Recorded before posting, so no request can see the notice unfiltered.
+        await ctx.storage.set(notesKey(sessionID), [...(await notes(sessionID)), id])
+        // resume: false leaves the model asleep; the notice is delivered with the session's next turn.
+        const text = `[prefix-editor] ${description}`
+        await ctx.session.synthetic({ sessionID, id, text, description, metadata: NOTE, resume: false })
         return {}
       },
     })

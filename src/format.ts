@@ -162,12 +162,18 @@ export function resolveSystem(stored: StoredSystem, system: SystemPart[], agent:
 /** Metadata marking the user message /edit-prefix <instruction> sends the model. */
 export const REQUEST = { prefixEditor: "request" } as const
 
-/** Drops each /edit-prefix request and the turn it started (up to the next user message): plugin plumbing, not history. */
+/** Metadata marking the notice left in a session a copy was made from. */
+export const NOTE = { prefixEditor: "note" } as const
+
+/**
+ * Drops plugin plumbing from history: the notices left on saving, and each /edit-prefix request v0.2 sent with the
+ * turn it started (up to the next user message).
+ */
 export function withoutRequests(messages: Stored[]): Stored[] {
   let inRequest = false
   return messages.filter((m) => {
     if (m.type === "user") inRequest = m.metadata?.prefixEditor === REQUEST.prefixEditor
-    return !inRequest
+    return !inRequest && m.metadata?.prefixEditor !== NOTE.prefixEditor
   })
 }
 
