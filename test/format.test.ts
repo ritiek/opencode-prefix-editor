@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { applyEdits, current, outline, parse, rebuild, render, resolveSystem, systemSpec, type Edit, type Transfer } from "../src/format.ts"
+import { applyEdits, current, outline, parse, rebuild, render, resolveSystem, systemSpec, withoutRequests, REQUEST, type Edit, type Transfer } from "../src/format.ts"
 
 type Stored = Transfer["messages"][number]
 const time = { created: 1 }
@@ -205,5 +205,16 @@ describe("system prompt", () => {
       { type: "text", text: "Env: mac\n" },
       { type: "text", text: "Be brief." },
     ])
+  })
+})
+
+describe("request turns", () => {
+  test("each /edit-prefix request and its turn are dropped, up to the next user message", () => {
+    const m = messages()
+    const request = (id: string, metadata?: object) => ({ type: "user", id, time, text: "Edit this session's prefix", metadata }) as never as Stored
+    const reply = (id: string) => ({ ...m[2]!, id }) as Stored
+    const user = (id: string) => ({ ...m[0]!, id }) as Stored
+    const list = [m[0]!, request("r1", REQUEST), reply("a1"), m[3]!, user("u2"), request("r2", REQUEST), reply("a2"), request("u3", { other: 1 })]
+    expect(withoutRequests(list).map((x) => x.id)).toEqual([m[0]!.id, "u2", "u3"])
   })
 })

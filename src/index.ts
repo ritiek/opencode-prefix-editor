@@ -94,6 +94,8 @@ export default Plugin.define({
           required: ["instruction", "edits"],
           additionalProperties: false,
         },
+        // A direct call: replacement text stays structured JSON instead of string literals in Code Mode code.
+        options: { codemode: false },
         async execute(input, context) {
           const draftID = crypto.randomUUID()
           const result = await new Promise<string>((resolve) => {

@@ -11,6 +11,8 @@ import {
   parse,
   rebuild,
   render,
+  REQUEST,
+  withoutRequests,
   type Edit,
   type Prefix,
   type SystemSpec,
@@ -74,10 +76,11 @@ export default Plugin.define({
     type Snapshot = { s: Session; transfer: Transfer; prefix: Prefix }
 
     const snapshot = async (s: Session): Promise<Snapshot> => {
-      const [{ system }, transfer] = await Promise.all([
+      const [{ system }, exported] = await Promise.all([
         rpc.getSystem({ sessionID: s.sessionID }, s.options) as Promise<{ system: SystemSpec }>,
         ctx.client.experimental.session.export({ sessionID: s.sessionID }),
       ])
+      const transfer = { ...exported, messages: withoutRequests(exported.messages) }
       return { s, transfer, prefix: current(transfer.messages, system) }
     }
 
@@ -129,31 +132,33 @@ export default Plugin.define({
     // and the edit_prefix call never end up in the edited copy.
     const requests = new Map<string, Snapshot>()
 
-    rpc.events.on("draft", async (event) => {
+    /** Applies the model's edits and has the user review them; returns what edit_prefix tells the model. */
+    const draft = async (snap: Snapshot, edits: Edit[]) => {
+      let text: string
+      try {
+        text = render(applyEdits(snap.prefix, edits))
+        rebuild(parse(text).messages, snap.transfer.messages) // the checks saving runs, reported to the model instead
+      } catch (e) {
+        // Keep the snapshot so the model can call edit_prefix again with fixed edits.
+        return `Edits not applied: ${(e as Error).message}. Fix them and call edit_prefix again.`
+      }
+      requests.delete(snap.s.sessionID)
+      return review(snap, text)
+    }
+
+    rpc.events.on("draft", (event) => {
       const { draftID, sessionID, edits } = event.data as { draftID: string; sessionID: string; edits: Edit[] }
       const snap = requests.get(sessionID)
-      if (!snap || session()?.sessionID !== sessionID) return
+      if (!snap) return // not this TUI's request
       // Each location runs its own server plugin instance; reply to the one that sent the draft.
       const options = { location: event.location }
-      const { claimed } = (await rpc.claim({ draftID }, options)) as { claimed: boolean }
-      if (!claimed) return
-      let result: string
-      try {
-        let text: string
-        try {
-          text = render(applyEdits(snap.prefix, edits))
-        } catch (e) {
-          // Keep the snapshot so the model can call edit_prefix again with fixed edits.
-          result = `Edits not applied: ${(e as Error).message}. Fix them and call edit_prefix again.`
-          return
-        }
-        requests.delete(sessionID)
-        result = await review(snap, text)
-      } catch (e) {
-        result = `Edits not saved: ${(e as Error).message}`
-      } finally {
-        await rpc.settle({ draftID, result: result! }, options)
+      const handle = async () => {
+        const { claimed } = (await rpc.claim({ draftID }, options)) as { claimed: boolean }
+        if (!claimed) return
+        const result = await draft(snap, edits).catch((e: Error) => `Edits not saved: ${e.message}`)
+        await rpc.settle({ draftID, result }, options)
       }
+      handle().catch((e) => toast((e as Error).message, "error"))
     })
 
     const editPrefix = async (instruction?: string) => {
@@ -162,7 +167,8 @@ export default Plugin.define({
       const snap = await snapshot(s)
       if (!instruction?.trim()) return void (await review(snap, render(snap.prefix)))
       requests.set(s.sessionID, snap)
-      await ctx.client.session.prompt({ sessionID: s.sessionID, text: request(instruction.trim(), outline(snap.prefix)) })
+      const text = request(instruction.trim(), outline(snap.prefix))
+      await ctx.client.session.prompt({ sessionID: s.sessionID, text, metadata: REQUEST })
     }
 
     const run = (action: () => Promise<unknown>) => {

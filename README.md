@@ -52,8 +52,9 @@ model calls the `edit_prefix` tool once with a list of edits addressed by ref (`
   after a part, or a system prompt section after a system prompt section.
 
 The result opens in your editor as above, so you can adjust or discard it. The copy is made from the session as it
-was when you ran the command, so neither the request nor the tool call ends up in it. If the edits name unknown
-sections, the tool tells the model what failed so it can try again. The tool only works for a TUI that ran
+was when you ran the command, so neither the request nor the tool call ends up in it; earlier `/edit-prefix` requests
+and the turns they started are left out of every copy and outline too. If the edits name unknown sections or would not
+save (such as invalid tool-input JSON), the tool tells the model what failed so it can try again. The tool only works for a TUI that ran
 `/edit-prefix <instruction>` for that session; any other call returns after a few seconds without changing anything.
 
 ## Format
