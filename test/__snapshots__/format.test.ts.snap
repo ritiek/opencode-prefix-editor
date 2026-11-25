@@ -1,21 +1,26 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`round trip renders readable sections 1`] = `
-"=== system-prompt #0 ===
+"=== system-prompt #0 agent build ===
 You are an agent.
 
-=== system-prompt #1 ===
+=== system-prompt #1 core/environment ===
 Env: linux
 
+=== system-prompt #2 core/date ===
+Today is Nov 25
 
-=== user #0 ===
+=== system-prompt #3 plugin ===
+Plugin note
+
+=== user #0 (not sent) ===
 fix the bug
 
 
-=== synthetic #1 ===
+=== synthetic #1 (not sent) ===
 <system-reminder>plan mode</system-reminder>
 
-=== assistant #2 ===
+=== assistant #2 (not sent) ===
 --- reasoning #2.0 ---
 thinking
 
@@ -54,9 +59,9 @@ const a = 1
   "command": "false"
 }
 
-=== idle #3 ===
-=== model-switched #4 anthropic/claude ===
-=== user #5 ===
+=== idle #3 (not sent) ===
+=== model-switched #4 anthropic/claude (not sent) ===
+=== user #5 (not sent) ===
 what is this?
 \\=== user ===
 \\--- text ---
@@ -69,11 +74,13 @@ what is this?
 `;
 
 exports[`model edits outline lists every section by ref with the start of its text 1`] = `
-"system-prompt #0: You are an agent.
-system-prompt #1: Env: linux
-user #0: fix the bug
-synthetic #1: <system-reminder>plan mode</system-reminder>
-assistant #2
+"system-prompt #0 agent build: You are an agent.
+system-prompt #1 core/environment: Env: linux
+system-prompt #2 core/date: Today is Nov 25
+system-prompt #3 plugin: Plugin note
+user #0 (not sent): fix the bug
+synthetic #1 (not sent): <system-reminder>plan mode</system-reminder>
+assistant #2 (not sent)
   reasoning #2.0: thinking
   text #2.1: Looking.
   tool-input #2.2 read: { "path": "a.ts" }
@@ -81,8 +88,8 @@ assistant #2
   tool-input #2.3 bash: { "command": "bun test" }
   tool-output #2.3 bash: [ { "type": "text", "text": "a" }, { "type": "file", "uri": "file:///b", "mime"…
   tool-input #2.4 bash: { "command": "false" }
-idle #3
-model-switched #4 anthropic/claude
-user #5: what is this? === user === --- text --- \\=== tool #2 ===
+idle #3 (not sent)
+model-switched #4 anthropic/claude (not sent)
+user #5 (not sent): what is this? === user === --- text --- \\=== tool #2 ===
 compaction #6: ## Objective"
 `;

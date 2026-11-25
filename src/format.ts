@@ -9,8 +9,8 @@ type Part = Assistant["content"][number]
 type Tool = Extract<Part, { type: "tool" }>
 type SystemPart = SessionContext["system"][number]
 
-/** System prompt sections; refs index the parts OpenCode generates for each request. */
-export type SystemSpec = { ref?: number; text: string }[]
+/** System prompt sections as edited; refs index the sections they were rendered from. */
+export type SystemSpec = { ref?: number; text: string; label?: string }[]
 type PartSpec = { ref?: [number, number]; kind: string; label?: string; body: string }
 type MessageSpec = { ref?: number; type: string; label?: string; body: string; parts: PartSpec[] }
 /** The editable text, structured. Refs index the original messages, which supply every field the text omits. */
@@ -35,14 +35,126 @@ function json(body: string, name: string) {
 
 // --- System prompt (applied per request by the server part) ---
 
-export const systemSpec = (parts: SystemPart[]): SystemSpec => parts.map((part, ref) => ({ ref, text: part.text }))
+/**
+ * What a system prompt section belongs to, so an edit follows its source instead of its position: the agent's own
+ * prompt (used only while that agent runs), one instruction source by key, or another part by its generated text.
+ */
+export type Anchor = { agent: string } | { instruction: string } | { part: string }
+/** A section as shown in the editor; inserted sections have no anchor. */
+export type Section = { anchor?: Anchor; generated: string; text: string; label: string }
+/** Stored system prompt edits: only the sources that differ from OpenCode's generated prompt (`null` deletes). */
+export type SystemEdits = { edits: { anchor: Anchor; text: string | null }[]; inserted: string[] }
+/** v0.2 stored every section's text by part index, which froze the whole prompt. Still honoured for old copies. */
+type LegacySystem = { ref?: number; text: string }[]
+export type StoredSystem = SystemEdits | LegacySystem
 
-export function resolveSystem(spec: SystemSpec, orig: SystemPart[]): SystemPart[] {
-  return spec.map(({ ref, text }) => {
-    const part = orig[ref ?? -1]
-    if (!part) return { type: "text", text }
-    return same(part.text, text) ? part : { ...part, text: retext(part.text, text) }
+const SEPARATOR = "\n\n" // how OpenCode joins instruction sources
+const sameAnchor = (a: Anchor, b: Anchor) => JSON.stringify(a) === JSON.stringify(b)
+type Instruction = { key: string; text: string }
+const instructionsOf = (part: SystemPart) =>
+  (part.metadata as { experimental?: { instructions?: Instruction[] } } | undefined)?.experimental?.instructions
+
+/** v0.2 copies froze every part; as whole-part edits they keep doing exactly that. */
+const fromLegacy = (spec: LegacySystem, system: SystemPart[]): SystemEdits => ({
+  edits: system.map((part, i) => {
+    const text = spec.find((s) => s.ref === i)?.text
+    return { anchor: { part: part.text }, text: text === undefined ? null : retext(part.text, text) }
+  }),
+  inserted: spec.filter((s) => s.ref === undefined || !system[s.ref]).map((s) => s.text),
+})
+const normalize = (stored: StoredSystem | undefined, system: SystemPart[]): SystemEdits =>
+  Array.isArray(stored) ? fromLegacy(stored, system) : (stored ?? { edits: [], inserted: [] })
+const finder = (stored: SystemEdits) => (anchor: Anchor) => stored.edits.find((e) => sameAnchor(e.anchor, anchor))
+
+/**
+ * OpenCode sends [agent prompt, instruction sources joined into one part, ...parts plugins add]. A part edited as a
+ * whole (legacy copies) stays one section; otherwise the instructions part splits into one section per source.
+ */
+function sources(system: SystemPart[], agent: string, edit: ReturnType<typeof finder>): Omit<Section, "text">[] {
+  return system.flatMap((part, i): Omit<Section, "text">[] => {
+    const list = instructionsOf(part)
+    const whole = { anchor: { part: part.text }, generated: part.text }
+    if (edit(whole.anchor)) return [{ ...whole, label: "edited" }]
+    if (list) return list.map(({ key, text }) => ({ anchor: { instruction: key }, generated: text, label: key }))
+    if (i === 0) return [{ anchor: { agent }, generated: part.text, label: `agent ${agent}` }]
+    return [{ ...whole, label: "plugin" }]
   })
+}
+
+/** The sections of the prompt in effect for `agent`: generated text with the stored edits applied. */
+export function sections(system: SystemPart[], agent: string, stored?: StoredSystem): Section[] {
+  const edits = normalize(stored, system)
+  const edit = finder(edits)
+  return [
+    ...sources(system, agent, edit).flatMap((s) => {
+      const e = edit(s.anchor!)
+      return e?.text === null ? [] : [{ ...s, text: e?.text ?? s.generated }]
+    }),
+    ...edits.inserted.map((text) => ({ generated: "", text, label: "inserted" })),
+  ]
+}
+
+/** Stored edits of a previous copy that the shown sections don't cover (another agent's prompt, a changed plugin part). */
+export const hiddenEdits = (shown: Section[], stored: StoredSystem | undefined, system: SystemPart[]): SystemEdits["edits"] =>
+  normalize(stored, system).edits.filter((e) => e.text === null || !shown.some((s) => s.anchor && sameAnchor(s.anchor, e.anchor)))
+
+/** The edits to store for `edited`, made from the rendered `shown` sections. Unchanged sources stay live. */
+export function diffSystem(shown: Section[], edited: SystemSpec, hidden: SystemEdits["edits"] = []): SystemEdits {
+  const byRef = new Map(edited.flatMap((s) => (s.ref === undefined ? [] : [[s.ref, s.text] as const])))
+  const edits = shown.flatMap((s, i): SystemEdits["edits"] => {
+    if (!s.anchor) return []
+    const text = byRef.get(i)
+    if (text === undefined) return [{ anchor: s.anchor, text: null }]
+    return same(text, s.generated) ? [] : [{ anchor: s.anchor, text: retext(s.generated, text) }]
+  })
+  const inserted = edited.flatMap((s) => (s.ref === undefined || !shown[s.ref]?.anchor ? [s.text] : []))
+  const covered = (e: { anchor: Anchor }) => edits.some((x) => sameAnchor(x.anchor, e.anchor))
+  return { edits: [...edits, ...hidden.filter((e) => !covered(e))], inserted }
+}
+
+export const isEmpty = (s: SystemEdits) => !s.edits.length && !s.inserted.length
+
+// Edits one instruction source inside the joined part, searching forward so a source quoting another isn't hit.
+function withInstructions(part: SystemPart, list: Instruction[], edit: (a: Anchor) => SystemEdits["edits"][number] | undefined) {
+  if (!list.some((i) => edit({ instruction: i.key }))) return part
+  let text = part.text
+  let cursor = 0
+  const kept: Instruction[] = []
+  for (const inst of list) {
+    const at = text.indexOf(inst.text, cursor)
+    const e = edit({ instruction: inst.key })
+    if (!e || at < 0) {
+      if (at >= 0) cursor = at + inst.text.length
+      kept.push(inst)
+      continue
+    }
+    const end = at + inst.text.length
+    if (e.text === null) {
+      const [from, to] = text.startsWith(SEPARATOR, end) ? [at, end + SEPARATOR.length] : text.slice(0, at).endsWith(SEPARATOR) ? [at - SEPARATOR.length, end] : [at, end]
+      text = text.slice(0, from) + text.slice(to)
+      cursor = from
+    } else {
+      text = text.slice(0, at) + e.text + text.slice(end)
+      cursor = at + e.text.length
+      kept.push({ ...inst, text: e.text })
+    }
+  }
+  // Keep the metadata copy in step: some providers read the sources from it instead of the text.
+  const meta = part.metadata as { experimental?: object } | undefined
+  return { ...part, text, metadata: { ...meta, experimental: { ...meta?.experimental, instructions: kept } } }
+}
+
+/** The system prompt to send: the generated one with the stored edits applied to their sources. */
+export function resolveSystem(stored: StoredSystem, system: SystemPart[], agent: string): SystemPart[] {
+  const edits = normalize(stored, system)
+  const edit = finder(edits)
+  const parts = system.flatMap((part, i): SystemPart[] => {
+    const list = instructionsOf(part)
+    const e = edit({ part: part.text }) ?? (!list && i === 0 ? edit({ agent }) : undefined)
+    if (e) return e.text === null ? [] : [{ ...part, text: e.text }]
+    return list ? [withInstructions(part, list, edit)] : [part]
+  })
+  return [...parts, ...edits.inserted.map((text) => ({ type: "text" as const, text }))].filter((p) => p.text.length)
 }
 
 // --- Stored messages ---
@@ -81,7 +193,7 @@ function output(t: Tool): string | undefined {
   return rawOutput(t) && first?.type === "text" ? first.text : JSON.stringify(t.state.content, null, 2)
 }
 
-function sections(p: Part, ref: [number, number]): PartSpec[] {
+function partSections(p: Part, ref: [number, number]): PartSpec[] {
   if (p.type === "text" || p.type === "reasoning") return [{ ref, kind: p.type, body: p.text }]
   if (p.type !== "tool") return [{ ref, kind: (p as { type: string }).type, body: "" }]
   const out = output(p)
@@ -91,16 +203,37 @@ function sections(p: Part, ref: [number, number]): PartSpec[] {
   ]
 }
 
+type Compaction = Extract<Stored, { type: "compaction"; status: "completed" }>
+const keepIDOf = (m: Compaction) => (typeof m.metadata?.keepID === "string" ? m.metadata.keepID : undefined)
+
+/**
+ * How each message reaches the model. OpenCode sends history from the latest completed compaction on; of the
+ * messages before it, the ones from its `keepID` on are rebuilt into the summary as plain text.
+ */
+export function reach(messages: Stored[]): ("sent" | "summary" | "unsent")[] {
+  const at = messages.findLastIndex((m) => m.type === "compaction" && m.status === "completed")
+  // shortcut: a native compaction made by another model is skipped by OpenCode; treated as active here.
+  const c = messages[at] as Compaction | undefined
+  const keepID = c && !c.native ? keepIDOf(c) : undefined
+  const kept = keepID ? messages.findIndex((m) => m.id === keepID) : -1
+  // The kept text leaves out earlier compactions and instruction updates.
+  const inText = (m: Stored) => m.type !== "compaction" && m.type !== "system"
+  return messages.map((m, i) => (i >= at ? "sent" : kept >= 0 && i >= kept && inText(m) ? "summary" : "unsent"))
+}
+
+const REACH_LABEL = { sent: undefined, summary: "(sent as summary text)", unsent: "(not sent)" } as const
+
 /** The session as editable structure: the system prompt followed by every stored message. */
 export function current(messages: Stored[], system: SystemSpec): Prefix {
+  const reached = reach(messages)
   return {
     system,
     messages: messages.map((m, i) => ({
       ref: i,
       type: m.type,
-      label: label(m),
+      label: [label(m), REACH_LABEL[reached[i]!]].filter(Boolean).join(" ") || undefined,
       body: textOf(m) ?? "",
-      parts: m.type === "assistant" ? m.content.flatMap((p, j) => sections(p, [i, j])) : [],
+      parts: m.type === "assistant" ? m.content.flatMap((p, j) => partSections(p, [i, j])) : [],
     })),
   }
 }
@@ -144,7 +277,7 @@ function assistantContent(m: MessageSpec, orig: Stored[]): Part[] {
 
 /** The stored messages for the edited text, with fresh ids. Unchanged messages and parts are copied verbatim. */
 export function rebuild(specs: MessageSpec[], orig: Stored[]): Stored[] {
-  return specs.flatMap((m): Stored[] => {
+  const copy = (m: MessageSpec): Stored[] => {
     if (m.ref === undefined) {
       if (m.type !== "user") throw new Error(`Only new user messages can be added, not "${m.type}"`)
       return m.body.trim() ? [{ type: "user", id: `msg_${random(26)}`, time: { created: Date.now() }, text: m.body }] : []
@@ -168,7 +301,28 @@ export function rebuild(specs: MessageSpec[], orig: Stored[]): Stored[] {
     if (same(text, m.body)) return [{ ...o, id }]
     const edited = retext(text, m.body)
     return [(o.type === "compaction" ? { ...o, id, summary: edited, native: undefined } : { ...o, id, text: edited }) as Stored]
+  }
+  const ids = new Map<string, string>() // original id -> id in the copy
+  const out = specs.flatMap((m) => {
+    const copied = copy(m)
+    if (m.ref !== undefined && copied[0]) ids.set(orig[m.ref]!.id, copied[0].id)
+    return copied
   })
+  return out.map((m) => (m.type === "compaction" && m.status === "completed" ? withKeepID(m, orig, ids) : m))
+}
+
+/**
+ * A summary compaction names the first message it kept by id, so the copy must point at that message's new id,
+ * or the next original message that survived the edit. Otherwise OpenCode silently drops the kept text.
+ */
+function withKeepID(c: Compaction, orig: Stored[], ids: Map<string, string>): Stored {
+  const keepID = keepIDOf(c)
+  if (!keepID) return c
+  const from = orig.findIndex((m) => m.id === keepID)
+  const to = orig.findIndex((m) => ids.get(m.id) === c.id)
+  const next = from < 0 ? undefined : orig.slice(from, to < 0 ? undefined : to).find((m) => ids.has(m.id))
+  const { keepID: _, ...metadata } = c.metadata ?? {}
+  return { ...c, metadata: next ? { ...metadata, keepID: ids.get(next.id)! } : metadata }
 }
 
 // --- Text ---
@@ -186,7 +340,7 @@ const chunk = (header: string, body: string) => (body ? `${header}\n${escape(bod
 
 export function render({ system, messages }: Prefix): string {
   return [
-    ...system.map((s) => chunk(`=== system-prompt${tag(s.ref)} ===`, s.text)),
+    ...system.map((s) => chunk(`=== system-prompt${tag(s.ref, s.label)} ===`, s.text)),
     ...messages.map((m) => {
       const [first, ...rest] = m.parts
       const inline = first?.kind === "text" && first.ref?.join() === head(m.ref)?.join()
@@ -208,7 +362,24 @@ export type Edit = {
   section?: "tool-input" | "tool-output"
 }
 
-const REF = /^(?:(system-prompt) )?#(\d+)(?:\.(\d+))?$/
+/** The edits in a model's reply: a JSON array, in a code fence or bare. */
+export function extractEdits(reply: string): Edit[] {
+  if (!reply.trim()) throw new Error("the reply was empty; reply with text, not a tool call")
+  const fenced = /```(?:json)?[^\n]*\n([\s\S]*?)```/.exec(reply)?.[1]
+  const body = fenced ?? reply.slice(reply.indexOf("["), reply.lastIndexOf("]") + 1)
+  if (!body.trim()) throw new Error("the reply has no JSON array of edits")
+  let edits: unknown
+  try {
+    edits = JSON.parse(body)
+  } catch (e) {
+    throw new Error(`the reply is not valid JSON (${(e as Error).message})`)
+  }
+  if (!Array.isArray(edits) || !edits.every((e) => typeof e === "object" && e !== null && typeof e.op === "string"))
+    throw new Error("expected a JSON array of edit objects, each with an op")
+  return edits as Edit[]
+}
+
+const REF = /^(?:(system-prompt) )?#(\d+)(?:\.(\d+))?(?: .*)?$/ // a trailing label is ignored
 const EDITABLE = ["text", "reasoning", "tool-input", "tool-output"]
 
 /** One line per section with its ref and the start of its text, so the model can name sections without re-reading them. */
@@ -218,7 +389,7 @@ export function outline({ system, messages }: Prefix, width = 80): string {
     return first ? `${header}: ${first.length > width ? `${first.slice(0, width - 1)}…` : first}` : header
   }
   return [
-    ...system.map((s) => line(`system-prompt${tag(s.ref)}`, s.text)),
+    ...system.map((s) => line(`system-prompt${tag(s.ref, s.label)}`, s.text)),
     ...messages.flatMap((m) => [
       line(`${m.type}${tag(m.ref, m.label)}`, m.body),
       ...m.parts.map((p) => line(`  ${p.kind}${tag(p.ref, p.label)}`, p.body)),
