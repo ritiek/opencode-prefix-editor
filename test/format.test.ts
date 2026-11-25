@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { current, parse, rebuild, render, resolveSystem, systemSpec, type Transfer } from "../src/format.ts"
+import { applyEdits, current, outline, parse, rebuild, render, resolveSystem, systemSpec, type Edit, type Transfer } from "../src/format.ts"
 
 type Stored = Transfer["messages"][number]
 const time = { created: 1 }
@@ -122,6 +122,74 @@ describe("errors", () => {
   test("markers have no text", () => fails(t.replace("=== idle #3 ===", "=== idle #3 ===\nhello"), "idle #3 has no editable text"))
   test("parts only belong to assistant messages", () => expect(() => parse(t.replace("=== synthetic #1 ===", "=== synthetic #1 ===\n--- text ---"))).toThrow("must follow an assistant"))
   test("text before the first header is rejected", () => expect(() => parse(`oops\n${t}`)).toThrow("Line 1"))
+})
+
+describe("model edits", () => {
+  const m = messages()
+  const prefix = () => current(m, systemSpec(system as never))
+  // Edits go through the same text round trip the TUI review uses.
+  const apply = (edits: Edit[]) => {
+    const out = parse(render(applyEdits(prefix(), edits)))
+    return { system: resolveSystem(out.system, system as never), messages: rebuild(out.messages, m) as never as Record<string, any>[] }
+  }
+
+  test("outline lists every section by ref with the start of its text", () => {
+    expect(outline(prefix())).toMatchSnapshot()
+  })
+
+  test("no edits change nothing", () => {
+    expect(withoutIds(apply([]).messages as never)).toEqual(withoutIds(m))
+  })
+
+  test("delete removes messages, parts, tool calls and system sections", () => {
+    const out = apply([{ op: "delete", ref: "#3" }, { op: "delete", ref: "#2.2" }, { op: "delete", ref: "#2.0" }, { op: "delete", ref: "system-prompt #1" }])
+    expect(out.messages.map((msg) => msg.type)).toEqual(["user", "synthetic", "assistant", "model-switched", "user", "compaction"])
+    expect(out.messages[2]!.content.map((p: { type: string; id?: string }) => p.id ?? p.type)).toEqual(["text", "c2", "c3"])
+    expect(out.system).toHaveLength(1)
+  })
+
+  test("replace edits text, tool output by default, or tool input", () => {
+    const out = apply([
+      { op: "replace", ref: "#0", text: "fix the bug in b.ts" },
+      { op: "replace", ref: "#2.1", text: "Reading." },
+      { op: "replace", ref: "#2.2", text: "[pruned]" },
+      { op: "replace", ref: "#2.2", section: "tool-input", text: '{"path": "b.ts"}' },
+      { op: "replace", ref: "system-prompt #0", text: "You are a pirate." },
+    ])
+    expect(out.messages[0]).toMatchObject({ text: "fix the bug in b.ts\n", files: [{ uri: "file:///a.png" }] })
+    expect(out.messages[2]!.content[1]).toEqual({ type: "text", text: "Reading.", native: undefined })
+    expect(out.messages[2]!.content[2].state).toEqual({ status: "completed", input: { path: "b.ts" }, content: [{ type: "text", text: "[pruned]" }] })
+    expect(out.system[0]).toEqual({ type: "text", text: "You are a pirate.", cache: { type: "ephemeral" } })
+  })
+
+  test("insert adds user messages, text parts and system sections", () => {
+    const out = apply([
+      { op: "insert", after: "#0", text: "note" },
+      { op: "insert", after: "#2.2", text: "added part" },
+      { op: "insert", text: "at the end" },
+      { op: "insert", after: "system-prompt #1", text: "Be brief." },
+    ])
+    expect(out.messages.map((msg) => msg.type)).toEqual(["user", "user", "synthetic", "assistant", "idle", "model-switched", "user", "compaction", "user"])
+    expect(out.messages[1]).toMatchObject({ type: "user", text: "note" })
+    expect(out.messages[3]!.content[3]).toEqual({ type: "text", text: "added part" })
+    expect(out.messages.at(-1)).toMatchObject({ type: "user", text: "at the end" })
+    expect(out.system.at(-1)).toEqual({ type: "text", text: "Be brief." })
+  })
+
+  test("refs name the original sections, whatever came before", () => {
+    const out = apply([{ op: "delete", ref: "#1" }, { op: "replace", ref: "#5", text: "edited" }])
+    expect(out.messages[4]).toMatchObject({ type: "user", text: "edited" })
+  })
+
+  const fails = (edits: Edit[], message: string) => expect(() => applyEdits(prefix(), edits)).toThrow(message)
+  test("unknown refs are rejected", () => fails([{ op: "delete", ref: "#9" }], "Unknown ref #9"))
+  test("unknown parts are rejected", () => fails([{ op: "delete", ref: "#2.9" }], "Unknown ref #2.9"))
+  test("malformed refs are rejected", () => fails([{ op: "delete", ref: "2" }], 'Invalid ref "2"'))
+  test("a deleted section is gone", () => fails([{ op: "delete", ref: "#1" }, { op: "delete", ref: "#1" }], "Unknown ref #1"))
+  test("assistant messages are edited through their parts", () => fails([{ op: "replace", ref: "#2", text: "x" }], "Replace the parts of assistant #2"))
+  test("a tool without output has no tool-output", () => fails([{ op: "replace", ref: "#2.4", text: "x" }], "#2.4 has no tool-output"))
+  test("replace and insert need text", () => fails([{ op: "replace", ref: "#0" }], "replace needs text"))
+  test("delete needs a ref", () => fails([{ op: "delete" }], "delete needs a ref"))
 })
 
 describe("system prompt", () => {

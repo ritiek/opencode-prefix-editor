@@ -67,3 +67,22 @@ what is this?
 
 "
 `;
+
+exports[`model edits outline lists every section by ref with the start of its text 1`] = `
+"system-prompt #0: You are an agent.
+system-prompt #1: Env: linux
+user #0: fix the bug
+synthetic #1: <system-reminder>plan mode</system-reminder>
+assistant #2
+  reasoning #2.0: thinking
+  text #2.1: Looking.
+  tool-input #2.2 read: { "path": "a.ts" }
+  tool-output #2.2 read: const a = 1
+  tool-input #2.3 bash: { "command": "bun test" }
+  tool-output #2.3 bash: [ { "type": "text", "text": "a" }, { "type": "file", "uri": "file:///b", "mime"…
+  tool-input #2.4 bash: { "command": "false" }
+idle #3
+model-switched #4 anthropic/claude
+user #5: what is this? === user === --- text --- \\=== tool #2 ===
+compaction #6: ## Objective"
+`;

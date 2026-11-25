@@ -8,6 +8,9 @@ saved as a new session, `<title> (edited)`, which the TUI switches to. Its trans
 model gets, and its edited system prompt applies to every request it makes. The original session is left untouched,
 so switching back to it is the undo.
 
+Or let the model do the editing: `/edit-prefix drop the dead-end debugging` has it call `edit_prefix` with the edits,
+which then open in your editor for review before they are saved the same way.
+
 ## Install
 
 The plugin is a directory of TypeScript sources that OpenCode loads as-is. With Nix, take it from this flake:
@@ -38,6 +41,20 @@ Without Nix, clone the repository and list its path under `plugins` in `opencode
 `/edit-prefix` (also in the command palette, `ctrl+p`) opens the session's system prompt and history in `$VISUAL` /
 `$EDITOR` (default `vi`). Saving without changes, or quitting with a non-zero exit (`:cq`),
 changes nothing. If the edited text does not parse, you can reopen it with your changes intact.
+
+`/edit-prefix <instruction>` sends the model your instruction and a one-line-per-section outline of the session. The
+model calls the `edit_prefix` tool once with a list of edits addressed by ref (`#N`, `#N.M`, `system-prompt #N`):
+
+- `{op: "delete", ref}` removes a section; deleting a tool part removes the call and its output.
+- `{op: "replace", ref, text, section?}` replaces a section's text; on a tool part, `section` picks `tool-input` or
+  `tool-output` (the default).
+- `{op: "insert", after?, text}` adds a user message after a message (at the end when `after` is omitted), a text part
+  after a part, or a system prompt section after a system prompt section.
+
+The result opens in your editor as above, so you can adjust or discard it. The copy is made from the session as it
+was when you ran the command, so neither the request nor the tool call ends up in it. If the edits name unknown
+sections, the tool tells the model what failed so it can try again. The tool only works for a TUI that ran
+`/edit-prefix <instruction>` for that session; any other call returns after a few seconds without changing anything.
 
 ## Format
 
@@ -90,7 +107,8 @@ A message you added.
 The TUI part exports the session, renders it, runs the editor (suspending the terminal UI), and imports the edited
 messages as a new session with fresh ids. The server part stores system prompt edits per session and swaps them in from
 a `context` hook. To show the current system prompt it issues a transient `session.generate` request and aborts it from
-its `generate` hook before anything reaches the model. The two parts talk over a plugin RPC.
+its `generate` hook before anything reaches the model. The two parts talk over a plugin RPC. The server part also
+registers `edit_prefix`, which hands its edits to the TUI as a draft and returns whatever the review ended in.
 
 ## Development
 

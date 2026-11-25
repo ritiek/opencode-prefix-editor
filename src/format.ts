@@ -186,6 +186,94 @@ export function render({ system, messages }: Prefix): string {
   ].join("")
 }
 
+// --- Edits from the model (/edit-prefix <instruction>) ---
+
+export type Edit = {
+  op: "delete" | "replace" | "insert"
+  ref?: string
+  after?: string
+  text?: string
+  section?: "tool-input" | "tool-output"
+}
+
+const REF = /^(?:(system-prompt) )?#(\d+)(?:\.(\d+))?$/
+const EDITABLE = ["text", "reasoning", "tool-input", "tool-output"]
+
+/** One line per section with its ref and the start of its text, so the model can name sections without re-reading them. */
+export function outline({ system, messages }: Prefix, width = 80): string {
+  const line = (header: string, body: string) => {
+    const first = body.trim().replace(/\s+/g, " ")
+    return first ? `${header}: ${first.length > width ? `${first.slice(0, width - 1)}…` : first}` : header
+  }
+  return [
+    ...system.map((s) => line(`system-prompt${tag(s.ref)}`, s.text)),
+    ...messages.flatMap((m) => [
+      line(`${m.type}${tag(m.ref, m.label)}`, m.body),
+      ...m.parts.map((p) => line(`  ${p.kind}${tag(p.ref, p.label)}`, p.body)),
+    ]),
+  ].join("\n")
+}
+
+/** Applies edits addressed by ref (`#N`, `#N.M`, `system-prompt #N`). Refs name the original sections, so order rarely matters. */
+export function applyEdits(prefix: Prefix, edits: Edit[]): Prefix {
+  const out = structuredClone(prefix)
+  const locate = (ref: string) => {
+    const m = REF.exec(ref.trim())
+    if (!m || (m[1] && m[3] !== undefined)) throw new Error(`Invalid ref "${ref}": use #N, #N.M or system-prompt #N`)
+    const n = Number(m[2])
+    const i = m[1] ? out.system.findIndex((s) => s.ref === n) : out.messages.findIndex((x) => x.ref === n)
+    if (i < 0) throw new Error(`Unknown ref ${ref}`)
+    if (m[1]) return { at: "system" as const, i }
+    if (m[3] === undefined) return { at: "message" as const, i }
+    const j = Number(m[3])
+    const parts = out.messages[i]!.parts
+    const sections = parts.filter((p) => p.ref?.[1] === j)
+    if (!sections.length) throw new Error(`Unknown ref ${ref}`)
+    return { at: "part" as const, i, j, parts, sections }
+  }
+  const text = (e: Edit) => {
+    if (typeof e.text !== "string") throw new Error(`${e.op} needs text`)
+    return e.text
+  }
+
+  for (const e of edits) {
+    if (e.op === "insert") {
+      const body = text(e)
+      if (e.after === undefined) {
+        out.messages.push({ type: "user", body, parts: [] })
+        continue
+      }
+      const t = locate(e.after)
+      if (t.at === "system") out.system.splice(t.i + 1, 0, { text: body })
+      else if (t.at === "message") out.messages.splice(t.i + 1, 0, { type: "user", body, parts: [] })
+      else t.parts.splice(t.parts.lastIndexOf(t.sections.at(-1)!) + 1, 0, { kind: "text", body })
+      continue
+    }
+    if (e.op !== "delete" && e.op !== "replace") throw new Error(`Unknown op "${e.op}"`)
+    if (e.ref === undefined) throw new Error(`${e.op} needs a ref`)
+    const t = locate(e.ref)
+    if (e.op === "delete") {
+      if (t.at === "system") out.system.splice(t.i, 1)
+      else if (t.at === "message") out.messages.splice(t.i, 1)
+      else out.messages[t.i]!.parts = t.parts.filter((p) => !t.sections.includes(p))
+      continue
+    }
+    const body = text(e)
+    if (t.at === "system") out.system[t.i]!.text = body
+    else if (t.at === "message") {
+      if (out.messages[t.i]!.type === "assistant") throw new Error(`Replace the parts of assistant ${e.ref} (#N.M) instead`)
+      out.messages[t.i]!.body = body
+    } else {
+      const tool = t.sections[0]!.kind.startsWith("tool-")
+      const section = tool ? t.sections.find((p) => p.kind === (e.section ?? "tool-output")) : t.sections[0]
+      if (!section) throw new Error(`${e.ref} has no ${e.section ?? "tool-output"}`)
+      if (!EDITABLE.includes(section.kind)) throw new Error(`${section.kind} ${e.ref} has no editable text`)
+      section.body = body
+    }
+  }
+  return out
+}
+
 export function parse(text: string): Prefix {
   const chunks: { header: string; line: number; lines: string[] }[] = []
   text.split("\n").forEach((line, i) => {

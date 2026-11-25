@@ -1,7 +1,10 @@
 import { Plugin } from "@opencode/plugin"
 import type { SessionContext } from "@opencode/plugin/promise/session"
 import { resolveSystem, systemSpec, type SystemSpec } from "./format.ts"
-import { PrefixEditor } from "./rpc.ts"
+import { edits, PrefixEditor } from "./rpc.ts"
+
+/** How long a TUI has to claim an edit_prefix draft. */
+const CLAIM_TIMEOUT_MS = 3000
 
 // Edits are saved as a new session (TUI part). The system prompt is generated per request, so the
 // new session's edited prompt is stored here and swapped in before each model call.
@@ -36,7 +39,23 @@ export default Plugin.define({
       return system
     }
 
-    await ctx.rpc.register(PrefixEditor, {
+    // edit_prefix drafts waiting on the TUI. `claim` is set until a TUI claims the draft.
+    const drafts = new Map<string, { claim?: () => void; settle: (result: string) => void }>()
+
+    const rpc = await ctx.rpc.register(PrefixEditor, {
+      claim: async (input) => {
+        const draft = drafts.get((input as { draftID: string }).draftID)
+        if (!draft?.claim) return { claimed: false }
+        draft.claim()
+        draft.claim = undefined
+        return { claimed: true }
+      },
+      settle: async (input) => {
+        const { draftID, result } = input as { draftID: string; result: string }
+        drafts.get(draftID)?.settle(result)
+        drafts.delete(draftID)
+        return {}
+      },
       getSystem: async (input, { error }) => {
         const { sessionID } = input as { sessionID: string }
         try {
@@ -58,6 +77,43 @@ export default Plugin.define({
           return error("failed", (e as Error).message, {})
         }
       },
+    })
+
+    // The edits are applied and reviewed by the TUI, which holds the session snapshot /edit-prefix took.
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        name: "edit_prefix",
+        description:
+          "Edit this session's system prompt and history. Only call this when /edit-prefix asks you to; it lists the section refs. The user reviews the result in $EDITOR and it is saved as a new session.",
+        input: {
+          type: "object",
+          properties: {
+            instruction: { type: "string", description: "The user's instruction, as given" },
+            edits: { ...edits, description: "Edits, applied in order" },
+          },
+          required: ["instruction", "edits"],
+          additionalProperties: false,
+        },
+        async execute(input, context) {
+          const draftID = crypto.randomUUID()
+          const result = await new Promise<string>((resolve) => {
+            const timer = setTimeout(() => {
+              drafts.delete(draftID)
+              resolve("No terminal UI picked up the edits: edit_prefix only works after /edit-prefix <instruction> in the TUI.")
+            }, CLAIM_TIMEOUT_MS)
+            drafts.set(draftID, { claim: () => clearTimeout(timer), settle: resolve })
+            context.signal.addEventListener("abort", () => {
+              clearTimeout(timer)
+              drafts.delete(draftID)
+              resolve("Cancelled.")
+            }, { once: true })
+            rpc.events
+              .emit("draft", { draftID, sessionID: context.sessionID, edits: (input as { edits: unknown[] }).edits })
+              .catch((e) => resolve(`Could not reach the TUI: ${(e as Error).message}`))
+          })
+          return { content: result }
+        },
+      })
     })
   },
 })
